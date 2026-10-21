@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 
@@ -8,6 +8,8 @@ from bullpen_client import (
     get_wallet_flow,
     crypto_signals,
 )
+from signal_mapper import map_signals
+from paper_engine import paper
 
 app = FastAPI(title="BullPenTrader Paper")
 
@@ -26,13 +28,15 @@ def health():
 
 @app.get("/signals")
 def signals(
-    period: str = Query("7d", description="1d, 7d, 30d, 90d, all"),
+    period: str = Query("7d"),
     limit: int = Query(15, ge=1, le=50),
     category: Optional[str] = Query("crypto"),
+    mapped: bool = Query(True),
 ):
-    """Combined crypto-focused signals (smart-money preferred, leaderboard fallback)."""
     data = crypto_signals(limit=limit)
-    return {"count": len(data), "signals": data, "period": period, "category": category}
+    if mapped:
+        data = map_signals(data)
+    return {"count": len(data), "signals": data, "period": period, "category": category, "mapped": mapped}
 
 
 @app.get("/signals/leaderboard")
@@ -59,3 +63,27 @@ def smart_money(
 def wallet_flow(address: str, limit: int = Query(20, ge=1, le=100)):
     trades = get_wallet_flow(address, limit=limit)
     return {"address": address, "count": len(trades), "trades": trades}
+
+
+# --- Paper trading ---
+@app.get("/paper")
+def paper_summary():
+    return paper.summary()
+
+
+@app.post("/paper/open")
+def paper_open(symbol: str, side: str, size_usd: float = 100.0, price: float = 65000.0):
+    try:
+        pos = paper.open_position(symbol, side.upper(), size_usd, price)
+        return {"ok": True, "position": pos}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/paper/close/{pos_id}")
+def paper_close(pos_id: str, price: float = 65000.0):
+    try:
+        pos = paper.close_position(pos_id, price)
+        return {"ok": True, "closed": pos}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
