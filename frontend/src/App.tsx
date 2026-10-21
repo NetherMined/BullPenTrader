@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { createChart } from 'lightweight-charts'
+import { createChart, IChartApi, ISeriesApi } from 'lightweight-charts'
 
 const API = 'http://localhost:8000'
 
 export default function App() {
   const chartRef = useRef<HTMLDivElement>(null)
+  const chartApi = useRef<IChartApi | null>(null)
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const [symbol, setSymbol] = useState('BTCUSDT')
   const [signals, setSignals] = useState<any[]>([])
   const [paper, setPaper] = useState<any>(null)
   const [loading, setLoading] = useState(false)
@@ -16,13 +19,26 @@ export default function App() {
       height: 420,
       layout: { background: { color: '#0e1117' }, textColor: '#d1d4dc' },
       grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+      timeScale: { timeVisible: true },
     })
     const series = chart.addCandlestickSeries()
-    series.setData([
-      { time: '2026-10-21', open: 65000, high: 65500, low: 64800, close: 65200 },
-    ])
+    chartApi.current = chart
+    seriesRef.current = series
     return () => chart.remove()
   }, [])
+
+  const loadChart = async (sym: string) => {
+    try {
+      const res = await fetch(`${API}/klines?symbol=${sym}&interval=1h&limit=120`)
+      const data = await res.json()
+      if (seriesRef.current && data.candles) {
+        seriesRef.current.setData(data.candles)
+        chartApi.current?.timeScale().fitContent()
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }
 
   const loadSignals = async () => {
     setLoading(true)
@@ -42,22 +58,38 @@ export default function App() {
   }
 
   useEffect(() => {
+    loadChart(symbol)
     loadSignals()
     loadPaper()
-  }, [])
+    const id = setInterval(loadPaper, 15000)
+    return () => clearInterval(id)
+  }, [symbol])
 
   const openFromSignal = async (s: any) => {
     await fetch(`${API}/paper/open?symbol=${s.symbol}&side=${s.side}&size_usd=100`, { method: 'POST' })
+    loadPaper()
+    if (s.symbol !== symbol) setSymbol(s.symbol)
+  }
+
+  const closePos = async (id: string) => {
+    await fetch(`${API}/paper/close/${id}`, { method: 'POST' })
     loadPaper()
   }
 
   return (
     <div style={{ background: '#0e1117', color: '#d1d4dc', minHeight: '100vh', padding: 16, fontFamily: 'system-ui' }}>
-      <h1 style={{ margin: '0 0 12px' }}>BullPenTrader — Paper</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h1 style={{ margin: 0 }}>BullPenTrader — Paper</h1>
+        <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={{ padding: 6 }}>
+          <option>BTCUSDT</option>
+          <option>ETHUSDT</option>
+          <option>SOLUSDT</option>
+        </select>
+      </div>
 
       <div ref={chartRef} style={{ width: '100%', marginBottom: 16 }} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16 }}>
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h2 style={{ margin: 0 }}>Signals</h2>
@@ -88,10 +120,14 @@ export default function App() {
             <div>
               <p>Balance: ${paper.balance}</p>
               <p>Equity: ${paper.equity}</p>
-              <p>Open: {paper.open_positions}</p>
+              <p>Open PnL: ${paper.open_pnl}</p>
+              <p>Open positions: {paper.open_positions}</p>
               {paper.positions?.map((p: any) => (
-                <div key={p.id} style={{ fontSize: 13, marginBottom: 6 }}>
-                  {p.symbol} {p.side} ${p.size_usd} @ {p.entry_price}
+                <div key={p.id} style={{ fontSize: 13, marginBottom: 8, padding: 6, border: '1px solid #2a2e39', borderRadius: 4 }}>
+                  <div>{p.symbol} {p.side} ${p.size_usd}</div>
+                  <div>Entry: {p.entry_price} → Mark: {p.mark_price ?? '—'}</div>
+                  <div style={{ color: p.pnl >= 0 ? '#0ecb81' : '#f6465d' }}>PnL: ${p.pnl}</div>
+                  <button onClick={() => closePos(p.id)} style={{ fontSize: 12, marginTop: 4 }}>Close</button>
                 </div>
               ))}
               <button onClick={loadPaper} style={{ marginTop: 8 }}>Refresh</button>
