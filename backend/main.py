@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
+from typing import Optional, List
 
 from bullpen_client import (
     get_top_traders,
@@ -10,6 +10,7 @@ from bullpen_client import (
 )
 from signal_mapper import map_signals
 from paper_engine import paper
+from price_client import get_price, get_klines, get_prices
 
 app = FastAPI(title="BullPenTrader Paper")
 
@@ -65,25 +66,51 @@ def wallet_flow(address: str, limit: int = Query(20, ge=1, le=100)):
     return {"address": address, "count": len(trades), "trades": trades}
 
 
+# --- Prices ---
+@app.get("/price/{symbol}")
+def price(symbol: str):
+    try:
+        return {"symbol": symbol, "price": get_price(symbol)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/klines")
+def klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 100):
+    try:
+        return {"symbol": symbol, "candles": get_klines(symbol, interval, limit)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # --- Paper trading ---
 @app.get("/paper")
 def paper_summary():
-    return paper.summary()
+    symbols = list({p["symbol"] for p in paper.positions})
+    prices = get_prices(symbols) if symbols else {}
+    return paper.summary(prices)
 
 
 @app.post("/paper/open")
-def paper_open(symbol: str, side: str, size_usd: float = 100.0, price: float = 65000.0):
+def paper_open(symbol: str, side: str, size_usd: float = 100.0):
     try:
+        price = get_price(symbol)
         pos = paper.open_position(symbol, side.upper(), size_usd, price)
-        return {"ok": True, "position": pos}
-    except ValueError as e:
+        return {"ok": True, "position": pos, "entry_price": price}
+    except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/paper/close/{pos_id}")
-def paper_close(pos_id: str, price: float = 65000.0):
+def paper_close(pos_id: str):
     try:
-        pos = paper.close_position(pos_id, price)
-        return {"ok": True, "closed": pos}
+        pos = next((p for p in paper.positions if p["id"] == pos_id), None)
+        if not pos:
+            raise ValueError("Position not found")
+        price = get_price(pos["symbol"])
+        closed = paper.close_position(pos_id, price)
+        return {"ok": True, "closed": closed, "exit_price": price}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
